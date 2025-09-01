@@ -50,7 +50,7 @@ func main() {
 		fmt.Println("Failed to open Badger storage:", err)
 		return
 	}
-	defer badgerStorageEngine.RemoveTempFSArtefacts(true, true)
+	defer badgerStorageEngine.RemoveTempFSArtefacts(true, true, true)
 	defer badgerStorageEngine.Close()
 
 	//badgerStorageEngine, err := sdk.OpenOnlyInMemoryConnection(
@@ -103,13 +103,4 @@ func main() {
 	pkprefix := sdk.BuildPKPrefix(db, ver, table)
 	fmt.Println(string(pkprefix) + " <- pk prefix")
 	sdk.Demonstrate(badgerStorageEngine, db, ver, table, prefix, pkprefix)
-
-	//if err := badgerStorageEngine.Close(); err != nil {
-	//	fmt.Println("Failed to close Badger storage:", err)
-	//} else {
-	//	fmt.Println("Badger storage closed successfully.")
-	//}
-
-	//badgerStorageEngine.Close()
-	//badgerStorageEngine.RemoveTempFSArtefacts(true, true)
 }

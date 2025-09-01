@@ -253,14 +253,14 @@ func AuditKeyspace(ctx context.Context, eng BadgerStorageEngine) (*AuditReport, 
 			rep.Total++
 
 			switch {
-			case bytes.HasPrefix(k, []byte("data:")):
+			case bytes.HasPrefix(k, []byte("d:")):
 				rep.Data++
 				sp := spaceFromKey(k) // db-name между "data:" и следующим ':'
 				ss := rep.BySpace[sp]
 				ss.Data++
 				rep.BySpace[sp] = ss
 
-			case bytes.HasPrefix(k, []byte("idx:")):
+			case bytes.HasPrefix(k, []byte("x:")):
 				rep.Idx++
 				sp := spaceFromKey(k)
 				ss := rep.BySpace[sp]
@@ -281,7 +281,7 @@ func AuditKeyspace(ctx context.Context, eng BadgerStorageEngine) (*AuditReport, 
 					return fmt.Errorf("idx -> txn.Get(pk): %w", err)
 				}
 
-			case bytes.HasPrefix(k, []byte("uniq:")):
+			case bytes.HasPrefix(k, []byte("u:")):
 				rep.Uniq++
 				sp := spaceFromKey(k)
 				ss := rep.BySpace[sp]

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
@@ -68,8 +67,8 @@ type BadgerStorageEngine interface {
 
 	Close() error
 	DB() *badger.DB
-	// todo только для режима TempFS, удаляет артефакты на диске
-	RemoveTempFSArtefacts(sure bool, accept bool) error
+	// todo только для режима TempFS, удаляет артефакты на диске для всей бд
+	RemoveTempFSArtefacts(sure bool, accept bool, removeVlog bool) error
 
 	TransactionManager
 	Iterator
@@ -151,8 +150,8 @@ func OpenTempFSConnection(
 
 }
 
-func (engine *Engine) RemoveTempFSArtefacts(sure bool, accept bool) error {
-	if !sure || !accept {
+func (engine *Engine) RemoveTempFSArtefacts(sure bool, accept bool, removeVlog bool) error {
+	if !sure || !accept || !removeVlog {
 		return fmt.Errorf("not sure to remove temp fs artefacts")
 	}
 	dir := engine.db.Opts().Dir
@@ -160,7 +159,6 @@ func (engine *Engine) RemoveTempFSArtefacts(sure bool, accept bool) error {
 	if err != nil {
 		return fmt.Errorf("remove all badger dir on RemoveTempFSArtefacts %s: %w", dir, err)
 	}
-	log.Printf("removed all badger dir on RemoveTempFSArtefacts: %s", dir)
 	return nil
 }
 
@@ -333,7 +331,6 @@ func (engine *Engine) Close() error {
 	if err != nil {
 		return fmt.Errorf("[Close] db.Close: %w", err)
 	}
-	log.Printf("badger storage closed")
 	return nil
 }
 
