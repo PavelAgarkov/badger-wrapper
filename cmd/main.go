@@ -12,7 +12,7 @@ func main() {
 	baseCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	badgerStorageEngine, err := sdk.OpenTempFSConnection(
+	badgerStorageEngine, cleanupTempFS, err := sdk.OpenTempFSConnection(
 		baseCtx,
 		sdk.BadgerDBMaster{
 			Dir:                  "badger_data/temp_fs_connection",
@@ -50,13 +50,15 @@ func main() {
 		fmt.Println("Failed to open Badger storage:", err)
 		return
 	}
-	//defer badgerStorageEngine.RemoveTempFSArtefacts(true, true, true)
-	//defer badgerStorageEngine.Close()
+
 	defer func() {
-		if err := badgerStorageEngine.RemoveTempFSArtefacts(true, true, true); err != nil {
-			fmt.Println("cleanup:", err)
+		engine, ok := badgerStorageEngine.(*sdk.Engine)
+		if !ok {
+			return
 		}
+		cleanupTempFS(engine)
 	}()
+
 	defer func() {
 		if err := badgerStorageEngine.Close(); err != nil {
 			fmt.Println("close:", err)

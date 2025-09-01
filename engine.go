@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
 	"github.com/dgraph-io/badger/v4/options"
+	"github.com/google/uuid"
 )
 
 //данные нужно хранить в виде - idx : pk, pk : data. т.е. отдельно индекс и отдельно данные. Они связаны по PK.
@@ -68,7 +70,7 @@ type BadgerStorageEngine interface {
 	Close() error
 	DB() *badger.DB
 	// todo только для режима TempFS, удаляет артефакты на диске для всей бд
-	RemoveTempFSArtefacts(sure bool, accept bool, removeVlog bool) error
+	//RemoveTempFSArtefacts(sure bool, accept bool, removeVlog bool) error
 
 	TransactionManager
 	Iterator
@@ -82,8 +84,8 @@ type Engine struct {
 	TransactionManager
 	Iterator
 	Locker
-	stopGC chan struct{}
-	temp   bool
+	stopGC       chan struct{}
+	cleanupToken string
 }
 
 func (engine *Engine) DB() *badger.DB {
@@ -96,7 +98,7 @@ func OpenTempFSConnection(
 	limit MemoryLimit,
 	txnManagerOptions TxnManagerOptions,
 	loggingLevel LogLevel,
-) (BadgerStorageEngine, error) {
+) (BadgerStorageEngine, func(engine *Engine), error) {
 	opt := Options{
 		Dir:                  cfg.Dir,
 		ValueDir:             cfg.ValueDir,
@@ -119,51 +121,53 @@ func OpenTempFSConnection(
 
 	if !opt.InMemory && !opt.ReadOnly {
 		if opt.Dir == "" {
-			return nil, fmt.Errorf("empty Dir is unsafe")
+			return nil, nil, fmt.Errorf("empty Dir is unsafe")
 		}
 		// Безопасно создадим каталоги
 		if err := os.MkdirAll(opt.Dir, 0o700); err != nil {
-			return nil, fmt.Errorf("mkdir dir %s: %w", opt.Dir, err)
+			return nil, nil, fmt.Errorf("mkdir dir %s: %w", opt.Dir, err)
 		}
 		if opt.ValueDir != "" && opt.ValueDir != opt.Dir {
 			if err := os.MkdirAll(opt.ValueDir, 0o700); err != nil {
-				return nil, fmt.Errorf("mkdir value dir %s: %w", opt.ValueDir, err)
+				return nil, nil, fmt.Errorf("mkdir value dir %s: %w", opt.ValueDir, err)
 			}
 		}
 	}
 
 	storage, err := open(ctx, opt, &limit)
 	if err != nil {
-		return nil, fmt.Errorf("open badger temp fs storage: %w", err)
+		return nil, nil, fmt.Errorf("open badger temp fs storage: %w", err)
 	}
 
 	storage.TransactionManager = NewTransactionManager(storage, txnManagerOptions)
 	storage.Iterator = NewRawIterator(storage)
 	storage.Locker = NewPkLocker()
 	storage.Encoder = NewEncoderByName(cfg.Encoder)
-	storage.temp = true
 
-	return storage, nil
+	storage.cleanupToken = uuid.New().String()
+	cleanupTempFS := func(engine *Engine) {
+		if storage.cleanupToken == engine.cleanupToken {
+			err := removeTempFSArtefacts(engine)
+			if err != nil {
+				log.Printf("remove temp fs artefacts: %v", err)
+			}
+		}
+	}
 
+	return storage, cleanupTempFS, nil
 }
 
-func (engine *Engine) RemoveTempFSArtefacts(sure, accept, removeVlog bool) error {
-	if !engine.temp {
-		return fmt.Errorf("not a temp fs connection")
-	}
+func removeTempFSArtefacts(engine *Engine) error {
 	dir := engine.db.Opts().Dir
 	vdir := engine.db.Opts().ValueDir
 
-	if !sure || !accept {
-		return fmt.Errorf("not sure to remove temp fs artefacts")
-	}
 	if dir == "" || dir == "/" {
 		return fmt.Errorf("refuse to remove unsafe path: %q", dir)
 	}
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("remove badger dir %s: %w", dir, err)
 	}
-	if removeVlog && vdir != "" && vdir != dir {
+	if vdir != "" && vdir != dir {
 		if vdir == "/" {
 			return fmt.Errorf("refuse to remove unsafe value dir: %q", vdir)
 		}
@@ -206,7 +210,7 @@ func OpenOnlyInMemoryConnection(
 	storage.Iterator = NewRawIterator(storage)
 	storage.Locker = NewPkLocker()
 	storage.Encoder = NewEncoderByName(cfg.Encoder)
-	storage.temp = false
+	//storage.temp = false
 
 	return storage, nil
 }
