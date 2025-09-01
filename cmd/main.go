@@ -12,23 +12,32 @@ func main() {
 	baseCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	badgerStorageEngine, err := sdk.OpenOnlyInMemoryConnection(
+	badgerStorageEngine, err := sdk.OpenTempFSConnection(
 		baseCtx,
 		sdk.BadgerDBMaster{
-			InMemory:             true,
+			Dir:                  "badger_data/temp_fs_connection",
+			ValueDir:             "badger_data/temp_fs_connection/vlog",
+			InMemory:             false,
 			ReadOnly:             false,
 			WithMetrics:          true,
 			GCInterval:           600 * time.Second,
 			NumGoroutines:        2,
 			NumCompactors:        4,
-			ZstdCompressionLevel: 3,
+			ZstdCompressionLevel: 4,
 			DetectConflicts:      true,
 			Encoder:              "proto",
 			NumVersionsToKeep:    1,
 			ValueThreshold:       1024 * sdk.B,
-			ValueLogFileSize:     128 * sdk.MiB,
-			BaseTableSize:        64 * sdk.MiB,
-			RamLimitMemory:       10 * sdk.GiB,
+			ValueLogFileSize:     1 * sdk.GiB,
+			BaseTableSize:        256 * sdk.MiB,
+			SyncWrites:           false,
+			Compression:          "snappy",
+		},
+		sdk.MemoryLimit{
+			BlockCacheSize: 256 * sdk.MiB,
+			IndexCacheSize: 256 * sdk.MiB,
+			MemTableSize:   96 * sdk.MiB,
+			NumMemtables:   4,
 		},
 		sdk.TxnManagerOptions{
 			MaxRetries:  5,
@@ -36,13 +45,45 @@ func main() {
 			MaxBackoff:  150 * time.Millisecond,
 		},
 		sdk.GetLevelByName("ERROR"),
-		sdk.ReadWriteLoad,
 	)
 	if err != nil {
 		fmt.Println("Failed to open Badger storage:", err)
 		return
 	}
+	defer badgerStorageEngine.RemoveTempFSArtefacts(true, true)
 	defer badgerStorageEngine.Close()
+
+	//badgerStorageEngine, err := sdk.OpenOnlyInMemoryConnection(
+	//	baseCtx,
+	//	sdk.BadgerDBMaster{
+	//		InMemory:             true,
+	//		ReadOnly:             false,
+	//		WithMetrics:          true,
+	//		GCInterval:           600 * time.Second,
+	//		NumGoroutines:        2,
+	//		NumCompactors:        4,
+	//		ZstdCompressionLevel: 3,
+	//		DetectConflicts:      true,
+	//		Encoder:              "proto",
+	//		NumVersionsToKeep:    1,
+	//		ValueThreshold:       1024 * sdk.B,
+	//		ValueLogFileSize:     128 * sdk.MiB,
+	//		BaseTableSize:        64 * sdk.MiB,
+	//		RamLimitMemory:       10 * sdk.GiB,
+	//	},
+	//	sdk.TxnManagerOptions{
+	//		MaxRetries:  5,
+	//		BaseBackoff: 5 * time.Millisecond,
+	//		MaxBackoff:  150 * time.Millisecond,
+	//	},
+	//	sdk.GetLevelByName("ERROR"),
+	//	sdk.ReadWriteLoad,
+	//)
+	//if err != nil {
+	//	fmt.Println("Failed to open Badger storage:", err)
+	//	return
+	//}
+	//defer badgerStorageEngine.Close()
 
 	const (
 		DefaultBD        = "badger_in_memory"
@@ -63,9 +104,12 @@ func main() {
 	fmt.Println(string(pkprefix) + " <- pk prefix")
 	sdk.Demonstrate(badgerStorageEngine, db, ver, table, prefix, pkprefix)
 
-	if err := badgerStorageEngine.Close(); err != nil {
-		fmt.Println("Failed to close Badger storage:", err)
-	} else {
-		fmt.Println("Badger storage closed successfully.")
-	}
+	//if err := badgerStorageEngine.Close(); err != nil {
+	//	fmt.Println("Failed to close Badger storage:", err)
+	//} else {
+	//	fmt.Println("Badger storage closed successfully.")
+	//}
+
+	//badgerStorageEngine.Close()
+	//badgerStorageEngine.RemoveTempFSArtefacts(true, true)
 }

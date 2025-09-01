@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"os"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
+	"github.com/dgraph-io/badger/v4/options"
 )
 
 //данные нужно хранить в виде - idx : pk, pk : data. т.е. отдельно индекс и отдельно данные. Они связаны по PK.
@@ -65,6 +68,8 @@ type BadgerStorageEngine interface {
 
 	Close() error
 	DB() *badger.DB
+	// todo только для режима TempFS, удаляет артефакты на диске
+	RemoveTempFSArtefacts(sure bool, accept bool) error
 
 	TransactionManager
 	Iterator
@@ -85,6 +90,80 @@ func (engine *Engine) DB() *badger.DB {
 	return engine.db
 }
 
+func OpenTempFSConnection(
+	ctx context.Context,
+	cfg BadgerDBMaster,
+	limit MemoryLimit,
+	txnManagerOptions TxnManagerOptions,
+	loggingLevel LogLevel,
+) (BadgerStorageEngine, error) {
+	opt := Options{
+		Dir:                  cfg.Dir,
+		ValueDir:             cfg.ValueDir,
+		InMemory:             cfg.InMemory,
+		ReadOnly:             cfg.ReadOnly,
+		WithMetrics:          cfg.WithMetrics,
+		GCInterval:           cfg.GCInterval,
+		NumGoroutines:        cfg.NumGoroutines,
+		ValueThreshold:       cfg.ValueThreshold,
+		ValueLogFileSize:     cfg.ValueLogFileSize,
+		BaseTableSize:        cfg.BaseTableSize,
+		NumCompactors:        cfg.NumCompactors,
+		ZSTDCompressionLevel: cfg.ZstdCompressionLevel,
+		DetectConflicts:      cfg.DetectConflicts,
+		LoggingLevel:         loggingLevel,
+		NumVersionsToKeep:    cfg.NumVersionsToKeep,
+		SyncWrites:           cfg.SyncWrites,
+		Compression:          cfg.Compression,
+	}
+
+	if !opt.InMemory && !opt.ReadOnly {
+		if opt.Dir == "" {
+			return nil, fmt.Errorf("empty Dir is unsafe")
+		}
+		err := os.RemoveAll(opt.Dir)
+		if err != nil {
+			return nil, fmt.Errorf("remove all badger dir %s: %w", opt.Dir, err)
+		}
+		err = os.MkdirAll(opt.Dir, 0o700)
+		if err != nil {
+			return nil, fmt.Errorf("mkdir all badger dir %s: %w", opt.Dir, err)
+		}
+		if opt.ValueDir != "" && opt.ValueDir != opt.Dir {
+			err = os.MkdirAll(opt.ValueDir, 0o700)
+			if err != nil {
+				return nil, fmt.Errorf("mkdir all badger value dir %s: %w", opt.ValueDir, err)
+			}
+		}
+	}
+
+	storage, err := open(ctx, opt, &limit)
+	if err != nil {
+		return nil, fmt.Errorf("open badger temp fs storage: %w", err)
+	}
+
+	storage.TransactionManager = NewTransactionManager(storage, txnManagerOptions)
+	storage.Iterator = NewRawIterator(storage)
+	storage.Locker = NewPkLocker()
+	storage.Encoder = NewEncoderByName(cfg.Encoder)
+
+	return storage, nil
+
+}
+
+func (engine *Engine) RemoveTempFSArtefacts(sure bool, accept bool) error {
+	if !sure || !accept {
+		return fmt.Errorf("not sure to remove temp fs artefacts")
+	}
+	dir := engine.db.Opts().Dir
+	err := os.RemoveAll(dir)
+	if err != nil {
+		return fmt.Errorf("remove all badger dir on RemoveTempFSArtefacts %s: %w", dir, err)
+	}
+	log.Printf("removed all badger dir on RemoveTempFSArtefacts: %s", dir)
+	return nil
+}
+
 func OpenOnlyInMemoryConnection(
 	ctx context.Context,
 	cfg BadgerDBMaster,
@@ -92,7 +171,7 @@ func OpenOnlyInMemoryConnection(
 	loggingLevel LogLevel,
 	profile string,
 ) (BadgerStorageEngine, error) {
-	options := Options{
+	opt := Options{
 		InMemory:             cfg.InMemory,
 		ReadOnly:             cfg.ReadOnly,
 		WithMetrics:          cfg.WithMetrics,
@@ -108,7 +187,7 @@ func OpenOnlyInMemoryConnection(
 		NumVersionsToKeep:    cfg.NumVersionsToKeep,
 	}
 	memLimits := ComputeMemoryPreset(cfg.RamLimitMemory, profile)
-	storage, err := open(ctx, options, memLimits)
+	storage, err := open(ctx, opt, memLimits)
 	if err != nil {
 		return nil, fmt.Errorf("open badger in-memory storage: %w", err)
 	}
@@ -153,9 +232,9 @@ func open(ctx context.Context, opts Options, limit *MemoryLimit) (*Engine, error
 	if opts.ValueDir != "" {
 		bo = bo.WithValueDir(opts.ValueDir)
 	}
-	if opts.SyncWrites {
-		bo = bo.WithSyncWrites(true)
-	}
+
+	bo = bo.WithSyncWrites(opts.SyncWrites)
+
 	if opts.NumGoroutines > 0 {
 		bo = bo.WithNumGoroutines(opts.NumGoroutines)
 	}
@@ -207,8 +286,13 @@ func open(ctx context.Context, opts Options, limit *MemoryLimit) (*Engine, error
 		bo = bo.WithNumCompactors(opts.NumCompactors)
 	}
 
-	if opts.ZSTDCompressionLevel != 0 {
-		bo = bo.WithZSTDCompressionLevel(opts.ZSTDCompressionLevel)
+	switch opts.Compression {
+	case "snappy":
+		bo = bo.WithCompression(options.Snappy)
+	case "zstd":
+		bo = bo.WithCompression(options.ZSTD).WithZSTDCompressionLevel(opts.ZSTDCompressionLevel)
+	default:
+		bo = bo.WithCompression(options.None)
 	}
 
 	bo = bo.WithDetectConflicts(opts.DetectConflicts)
@@ -249,6 +333,7 @@ func (engine *Engine) Close() error {
 	if err != nil {
 		return fmt.Errorf("[Close] db.Close: %w", err)
 	}
+	log.Printf("badger storage closed")
 	return nil
 }
 

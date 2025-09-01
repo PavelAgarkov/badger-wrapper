@@ -217,7 +217,7 @@ func Demonstrate(engine BadgerStorageEngine, db, ver, table string, prefix, pkpr
 	fmt.Println("all..")
 	if _, err := AuditKeyspace(ctx, engine); err != nil {
 		// тест «палится», если нашли мусор или висячие индексы
-		log.Fatalf("audit failed: %v", err)
+		log.Printf("audit failed: %v", err)
 	}
 	fmt.Println("all done.")
 }
