@@ -69,8 +69,6 @@ type BadgerStorageEngine interface {
 
 	Close() error
 	DB() *badger.DB
-	// todo только для режима TempFS, удаляет артефакты на диске для всей бд
-	//RemoveTempFSArtefacts(sure bool, accept bool, removeVlog bool) error
 
 	TransactionManager
 	Iterator
@@ -98,7 +96,7 @@ func OpenTempFSConnection(
 	limit MemoryLimit,
 	txnManagerOptions TxnManagerOptions,
 	loggingLevel LogLevel,
-) (BadgerStorageEngine, func(engine *Engine), error) {
+) (BadgerStorageEngine, func(), error) {
 	opt := Options{
 		Dir:                  cfg.Dir,
 		ValueDir:             cfg.ValueDir,
@@ -144,17 +142,19 @@ func OpenTempFSConnection(
 	storage.Locker = NewPkLocker()
 	storage.Encoder = NewEncoderByName(cfg.Encoder)
 
-	storage.cleanupToken = uuid.New().String()
-	cleanupTempFS := func(engine *Engine) {
-		if storage.cleanupToken == engine.cleanupToken {
-			err := removeTempFSArtefacts(engine)
-			if err != nil {
-				log.Printf("remove temp fs artefacts: %v", err)
-			}
+	token := uuid.NewString()
+	storage.cleanupToken = token
+
+	cleanup := func() {
+		if storage.cleanupToken != token {
+			return
+		}
+		if err := removeTempFSArtefacts(storage); err != nil {
+			log.Printf("remove temp fs artefacts: %v", err)
 		}
 	}
 
-	return storage, cleanupTempFS, nil
+	return storage, cleanup, nil
 }
 
 func removeTempFSArtefacts(engine *Engine) error {
