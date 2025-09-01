@@ -83,6 +83,7 @@ type Engine struct {
 	Iterator
 	Locker
 	stopGC chan struct{}
+	temp   bool
 }
 
 func (engine *Engine) DB() *badger.DB {
@@ -120,18 +121,13 @@ func OpenTempFSConnection(
 		if opt.Dir == "" {
 			return nil, fmt.Errorf("empty Dir is unsafe")
 		}
-		err := os.RemoveAll(opt.Dir)
-		if err != nil {
-			return nil, fmt.Errorf("remove all badger dir %s: %w", opt.Dir, err)
-		}
-		err = os.MkdirAll(opt.Dir, 0o700)
-		if err != nil {
-			return nil, fmt.Errorf("mkdir all badger dir %s: %w", opt.Dir, err)
+		// Безопасно создадим каталоги
+		if err := os.MkdirAll(opt.Dir, 0o700); err != nil {
+			return nil, fmt.Errorf("mkdir dir %s: %w", opt.Dir, err)
 		}
 		if opt.ValueDir != "" && opt.ValueDir != opt.Dir {
-			err = os.MkdirAll(opt.ValueDir, 0o700)
-			if err != nil {
-				return nil, fmt.Errorf("mkdir all badger value dir %s: %w", opt.ValueDir, err)
+			if err := os.MkdirAll(opt.ValueDir, 0o700); err != nil {
+				return nil, fmt.Errorf("mkdir value dir %s: %w", opt.ValueDir, err)
 			}
 		}
 	}
@@ -145,19 +141,35 @@ func OpenTempFSConnection(
 	storage.Iterator = NewRawIterator(storage)
 	storage.Locker = NewPkLocker()
 	storage.Encoder = NewEncoderByName(cfg.Encoder)
+	storage.temp = true
 
 	return storage, nil
 
 }
 
-func (engine *Engine) RemoveTempFSArtefacts(sure bool, accept bool, removeVlog bool) error {
-	if !sure || !accept || !removeVlog {
-		return fmt.Errorf("not sure to remove temp fs artefacts")
+func (engine *Engine) RemoveTempFSArtefacts(sure, accept, removeVlog bool) error {
+	if !engine.temp {
+		return fmt.Errorf("not a temp fs connection")
 	}
 	dir := engine.db.Opts().Dir
-	err := os.RemoveAll(dir)
-	if err != nil {
-		return fmt.Errorf("remove all badger dir on RemoveTempFSArtefacts %s: %w", dir, err)
+	vdir := engine.db.Opts().ValueDir
+
+	if !sure || !accept {
+		return fmt.Errorf("not sure to remove temp fs artefacts")
+	}
+	if dir == "" || dir == "/" {
+		return fmt.Errorf("refuse to remove unsafe path: %q", dir)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("remove badger dir %s: %w", dir, err)
+	}
+	if removeVlog && vdir != "" && vdir != dir {
+		if vdir == "/" {
+			return fmt.Errorf("refuse to remove unsafe value dir: %q", vdir)
+		}
+		if err := os.RemoveAll(vdir); err != nil {
+			return fmt.Errorf("remove badger value dir %s: %w", vdir, err)
+		}
 	}
 	return nil
 }
@@ -194,6 +206,7 @@ func OpenOnlyInMemoryConnection(
 	storage.Iterator = NewRawIterator(storage)
 	storage.Locker = NewPkLocker()
 	storage.Encoder = NewEncoderByName(cfg.Encoder)
+	storage.temp = false
 
 	return storage, nil
 }

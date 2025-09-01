@@ -130,8 +130,7 @@ type Options struct {
 	// но выше конкуренция за I/O и память.
 	NumCompactors int
 
-	// Compression — алгоритм сжатия блоков SST. "" (по умолчанию) — ZSTD; "none" — без сжатия.
-	// "" | "none" | "zstd" | "snappy" | "lz4" | "zlib" —
+	// Compression — алгоритм сжатия блоков SST: "none", "snappy", "zstd".
 	Compression string
 
 	// ZSTDCompressionLevel — уровень ZSTD (0 — по умолчанию; <0 — быстрее/хуже; >0 — медленнее/лучше).

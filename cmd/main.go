@@ -21,7 +21,7 @@ func main() {
 			ReadOnly:             false,
 			WithMetrics:          true,
 			GCInterval:           600 * time.Second,
-			NumGoroutines:        2,
+			NumGoroutines:        8,
 			NumCompactors:        4,
 			ZstdCompressionLevel: 4,
 			DetectConflicts:      true,
@@ -50,8 +50,18 @@ func main() {
 		fmt.Println("Failed to open Badger storage:", err)
 		return
 	}
-	defer badgerStorageEngine.RemoveTempFSArtefacts(true, true, true)
-	defer badgerStorageEngine.Close()
+	//defer badgerStorageEngine.RemoveTempFSArtefacts(true, true, true)
+	//defer badgerStorageEngine.Close()
+	defer func() {
+		if err := badgerStorageEngine.RemoveTempFSArtefacts(true, true, true); err != nil {
+			fmt.Println("cleanup:", err)
+		}
+	}()
+	defer func() {
+		if err := badgerStorageEngine.Close(); err != nil {
+			fmt.Println("close:", err)
+		}
+	}()
 
 	//badgerStorageEngine, err := sdk.OpenOnlyInMemoryConnection(
 	//	baseCtx,
