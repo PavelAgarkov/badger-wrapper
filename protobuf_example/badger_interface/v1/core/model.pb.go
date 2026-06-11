@@ -4,14 +4,15 @@
 // 	protoc        v6.31.1
 // source: badger_interface/v1/core/model.proto
 
-package mock
+package core
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -27,6 +28,7 @@ type User struct {
 	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
 	Type          string                 `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"`
 	Office        string                 `protobuf:"bytes,4,opt,name=office,proto3" json:"office,omitempty"`
+	Email         string                 `protobuf:"bytes,5,opt,name=email,proto3" json:"email,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -89,16 +91,24 @@ func (x *User) GetOffice() string {
 	return ""
 }
 
+func (x *User) GetEmail() string {
+	if x != nil {
+		return x.Email
+	}
+	return ""
+}
+
 var File_badger_interface_v1_core_model_proto protoreflect.FileDescriptor
 
 const file_badger_interface_v1_core_model_proto_rawDesc = "" +
 	"\n" +
-	"$badger_interface/v1/core/model.proto\x12\auser.v1\"V\n" +
+	"$badger_interface/v1/core/model.proto\x12\auser.v1\"l\n" +
 	"\x04User\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x03 \x01(\tR\x04type\x12\x16\n" +
-	"\x06office\x18\x04 \x01(\tR\x06officeB\x18Z\x16memory-storage/v1;mockb\x06proto3"
+	"\x06office\x18\x04 \x01(\tR\x06office\x12\x14\n" +
+	"\x05email\x18\x05 \x01(\tR\x05emailB\x18Z\x16memory-storage/v1;mockb\x06proto3"
 
 var (
 	file_badger_interface_v1_core_model_proto_rawDescOnce sync.Once

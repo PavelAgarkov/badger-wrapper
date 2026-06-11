@@ -30,6 +30,11 @@ func GetLevelByName(name string) LogLevel {
 }
 
 type BadgerDBMaster struct {
+	Dir         string
+	ValueDir    string
+	SyncWrites  bool
+	Compression string
+
 	InMemory             bool
 	RamLimitMemory       int64
 	ReadOnly             bool
@@ -124,6 +129,9 @@ type Options struct {
 	// NumCompactors — число воркеров компакции. Больше — быстрее переработка уровней при высокой нагрузке,
 	// но выше конкуренция за I/O и память.
 	NumCompactors int
+
+	// Compression — алгоритм сжатия блоков SST: "none", "snappy", "zstd".
+	Compression string
 
 	// ZSTDCompressionLevel — уровень ZSTD (0 — по умолчанию; <0 — быстрее/хуже; >0 — медленнее/лучше).
 	// Влияет на место на диске и CPU-времена (чтение/запись/компакции).

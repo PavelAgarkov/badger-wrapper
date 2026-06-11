@@ -3,9 +3,10 @@ package badger_sdk
 import (
 	"context"
 	"errors"
-	"github.com/dgraph-io/badger/v4"
 	"log"
 	"time"
+
+	"github.com/dgraph-io/badger/v4"
 )
 
 func (engine *Engine) runGC(ctx context.Context, interval time.Duration) {

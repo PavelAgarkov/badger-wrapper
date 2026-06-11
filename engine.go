@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"os"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
+	"github.com/dgraph-io/badger/v4/options"
 )
 
 //данные нужно хранить в виде - idx : pk, pk : data. т.е. отдельно индекс и отдельно данные. Они связаны по PK.
@@ -92,7 +95,7 @@ func OpenOnlyInMemoryConnection(
 	loggingLevel LogLevel,
 	profile string,
 ) (BadgerStorageEngine, error) {
-	options := Options{
+	opts := Options{
 		InMemory:             cfg.InMemory,
 		ReadOnly:             cfg.ReadOnly,
 		WithMetrics:          cfg.WithMetrics,
@@ -108,7 +111,7 @@ func OpenOnlyInMemoryConnection(
 		NumVersionsToKeep:    cfg.NumVersionsToKeep,
 	}
 	memLimits := ComputeMemoryPreset(cfg.RamLimitMemory, profile)
-	storage, err := open(ctx, options, memLimits)
+	storage, err := open(ctx, opts, memLimits)
 	if err != nil {
 		return nil, fmt.Errorf("open badger in-memory storage: %w", err)
 	}
@@ -119,6 +122,147 @@ func OpenOnlyInMemoryConnection(
 	storage.Encoder = NewEncoderByName(cfg.Encoder)
 
 	return storage, nil
+}
+
+func OpenFSConnection(
+	ctx context.Context,
+	cfg BadgerDBMaster,
+	limit MemoryLimit,
+	txnManagerOptions TxnManagerOptions,
+	loggingLevel LogLevel,
+) (BadgerStorageEngine, error) {
+	opt := Options{
+		Dir:                  cfg.Dir,
+		ValueDir:             cfg.ValueDir,
+		InMemory:             cfg.InMemory,
+		ReadOnly:             cfg.ReadOnly,
+		WithMetrics:          cfg.WithMetrics,
+		GCInterval:           cfg.GCInterval,
+		NumGoroutines:        cfg.NumGoroutines,
+		ValueThreshold:       cfg.ValueThreshold,
+		ValueLogFileSize:     cfg.ValueLogFileSize,
+		BaseTableSize:        cfg.BaseTableSize,
+		NumCompactors:        cfg.NumCompactors,
+		ZSTDCompressionLevel: cfg.ZstdCompressionLevel,
+		DetectConflicts:      cfg.DetectConflicts,
+		LoggingLevel:         loggingLevel,
+		NumVersionsToKeep:    cfg.NumVersionsToKeep,
+		SyncWrites:           cfg.SyncWrites,
+		Compression:          cfg.Compression,
+	}
+
+	if !opt.InMemory && !opt.ReadOnly {
+		if opt.Dir == "" {
+			return nil, fmt.Errorf("empty Dir is unsafe")
+		}
+		// Безопасно создадим каталоги
+		if err := os.MkdirAll(opt.Dir, 0o700); err != nil {
+			return nil, fmt.Errorf("mkdir dir %s: %w", opt.Dir, err)
+		}
+		if opt.ValueDir != "" && opt.ValueDir != opt.Dir {
+			if err := os.MkdirAll(opt.ValueDir, 0o700); err != nil {
+				return nil, fmt.Errorf("mkdir value dir %s: %w", opt.ValueDir, err)
+			}
+		}
+	}
+
+	storage, err := open(ctx, opt, &limit)
+	if err != nil {
+		return nil, fmt.Errorf("open badger temp fs storage: %w", err)
+	}
+
+	storage.TransactionManager = NewTransactionManager(storage, txnManagerOptions)
+	storage.Iterator = NewRawIterator(storage)
+	storage.Locker = NewPkLocker()
+	storage.Encoder = NewEncoderByName(cfg.Encoder)
+
+	return storage, nil
+}
+
+func OpenTempFSConnection(
+	ctx context.Context,
+	cfg BadgerDBMaster,
+	limit MemoryLimit,
+	txnManagerOptions TxnManagerOptions,
+	loggingLevel LogLevel,
+) (BadgerStorageEngine, func() error, error) {
+	opt := Options{
+		Dir:                  cfg.Dir,
+		ValueDir:             cfg.ValueDir,
+		InMemory:             cfg.InMemory,
+		ReadOnly:             cfg.ReadOnly,
+		WithMetrics:          cfg.WithMetrics,
+		GCInterval:           cfg.GCInterval,
+		NumGoroutines:        cfg.NumGoroutines,
+		ValueThreshold:       cfg.ValueThreshold,
+		ValueLogFileSize:     cfg.ValueLogFileSize,
+		BaseTableSize:        cfg.BaseTableSize,
+		NumCompactors:        cfg.NumCompactors,
+		ZSTDCompressionLevel: cfg.ZstdCompressionLevel,
+		DetectConflicts:      cfg.DetectConflicts,
+		LoggingLevel:         loggingLevel,
+		NumVersionsToKeep:    cfg.NumVersionsToKeep,
+		SyncWrites:           cfg.SyncWrites,
+		Compression:          cfg.Compression,
+	}
+
+	if !opt.InMemory && !opt.ReadOnly {
+		if opt.Dir == "" {
+			return nil, nil, fmt.Errorf("empty Dir is unsafe")
+		}
+		// Безопасно создадим каталоги
+		if err := os.MkdirAll(opt.Dir, 0o700); err != nil {
+			return nil, nil, fmt.Errorf("mkdir dir %s: %w", opt.Dir, err)
+		}
+		if opt.ValueDir != "" && opt.ValueDir != opt.Dir {
+			if err := os.MkdirAll(opt.ValueDir, 0o700); err != nil {
+				return nil, nil, fmt.Errorf("mkdir value dir %s: %w", opt.ValueDir, err)
+			}
+		}
+	}
+
+	cleanup := func() error {
+		if err := removeTempFSArtefacts(opt.Dir, opt.ValueDir); err != nil {
+			log.Printf("remove temp fs artefacts: %v", err)
+			return err
+		}
+		return nil
+	}
+
+	err := cleanup()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	storage, err := open(ctx, opt, &limit)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open badger temp fs storage: %w", err)
+	}
+
+	storage.TransactionManager = NewTransactionManager(storage, txnManagerOptions)
+	storage.Iterator = NewRawIterator(storage)
+	storage.Locker = NewPkLocker()
+	storage.Encoder = NewEncoderByName(cfg.Encoder)
+
+	return storage, cleanup, nil
+}
+
+func removeTempFSArtefacts(dir, valDir string) error {
+	if dir == "" || dir == "/" {
+		return fmt.Errorf("refuse to remove unsafe path: %q", dir)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("remove badger dir %s: %w", dir, err)
+	}
+	if valDir != "" && valDir != dir {
+		if valDir == "/" {
+			return fmt.Errorf("refuse to remove unsafe value dir: %q", valDir)
+		}
+		if err := os.RemoveAll(valDir); err != nil {
+			return fmt.Errorf("remove badger value dir %s: %w", valDir, err)
+		}
+	}
+	return nil
 }
 
 func open(ctx context.Context, opts Options, limit *MemoryLimit) (*Engine, error) {
@@ -153,9 +297,7 @@ func open(ctx context.Context, opts Options, limit *MemoryLimit) (*Engine, error
 	if opts.ValueDir != "" {
 		bo = bo.WithValueDir(opts.ValueDir)
 	}
-	if opts.SyncWrites {
-		bo = bo.WithSyncWrites(true)
-	}
+	bo = bo.WithSyncWrites(opts.SyncWrites)
 	if opts.NumGoroutines > 0 {
 		bo = bo.WithNumGoroutines(opts.NumGoroutines)
 	}
@@ -207,8 +349,13 @@ func open(ctx context.Context, opts Options, limit *MemoryLimit) (*Engine, error
 		bo = bo.WithNumCompactors(opts.NumCompactors)
 	}
 
-	if opts.ZSTDCompressionLevel != 0 {
-		bo = bo.WithZSTDCompressionLevel(opts.ZSTDCompressionLevel)
+	switch opts.Compression {
+	case "snappy":
+		bo = bo.WithCompression(options.Snappy)
+	case "zstd":
+		bo = bo.WithCompression(options.ZSTD).WithZSTDCompressionLevel(opts.ZSTDCompressionLevel)
+	default:
+		bo = bo.WithCompression(options.None)
 	}
 
 	bo = bo.WithDetectConflicts(opts.DetectConflicts)
