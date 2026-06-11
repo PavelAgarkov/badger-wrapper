@@ -12,7 +12,7 @@ func main() {
 	baseCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	badgerStorageEngine, cleanup, err := sdk.OpenTempFSConnection(
+	badgerStorageEngine, err := sdk.OpenFSConnection(
 		baseCtx,
 		sdk.BadgerDBMaster{
 			Dir:                  "badger_data/temp_fs_connection",
@@ -20,7 +20,7 @@ func main() {
 			InMemory:             false,
 			ReadOnly:             false,
 			WithMetrics:          true,
-			GCInterval:           600 * time.Second,
+			GCInterval:           5 * time.Second,
 			NumGoroutines:        8,
 			NumCompactors:        4,
 			ZstdCompressionLevel: 4,
@@ -55,7 +55,7 @@ func main() {
 		if err := badgerStorageEngine.Close(); err != nil {
 			fmt.Println("close:", err)
 		}
-		cleanup()
+		//cleanup()
 	}()
 
 	//badgerStorageEngine, err := sdk.OpenOnlyInMemoryConnection(
@@ -108,4 +108,6 @@ func main() {
 	pkprefix := sdk.BuildPKPrefix(db, ver, table)
 	fmt.Println(string(pkprefix) + " <- pk prefix")
 	sdk.Demonstrate(badgerStorageEngine, db, ver, table, prefix, pkprefix)
+
+	time.Sleep(15 * time.Second)
 }

@@ -3,7 +3,6 @@ package badger_sdk
 import (
 	"encoding/json"
 	"fmt"
-
 	"github.com/vmihailenco/msgpack/v5"
 	"google.golang.org/protobuf/proto"
 )

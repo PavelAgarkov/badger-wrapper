@@ -10,7 +10,6 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 	"github.com/dgraph-io/badger/v4/options"
-	"github.com/google/uuid"
 )
 
 //данные нужно хранить в виде - idx : pk, pk : data. т.е. отдельно индекс и отдельно данные. Они связаны по PK.
@@ -82,12 +81,102 @@ type Engine struct {
 	TransactionManager
 	Iterator
 	Locker
-	stopGC       chan struct{}
-	cleanupToken string
+	stopGC chan struct{}
 }
 
 func (engine *Engine) DB() *badger.DB {
 	return engine.db
+}
+
+func OpenOnlyInMemoryConnection(
+	ctx context.Context,
+	cfg BadgerDBMaster,
+	txnManagerOptions TxnManagerOptions,
+	loggingLevel LogLevel,
+	profile string,
+) (BadgerStorageEngine, error) {
+	opts := Options{
+		InMemory:             cfg.InMemory,
+		ReadOnly:             cfg.ReadOnly,
+		WithMetrics:          cfg.WithMetrics,
+		GCInterval:           cfg.GCInterval,
+		NumGoroutines:        cfg.NumGoroutines,
+		ValueThreshold:       cfg.ValueThreshold,
+		ValueLogFileSize:     cfg.ValueLogFileSize,
+		BaseTableSize:        cfg.BaseTableSize,
+		NumCompactors:        cfg.NumCompactors,
+		ZSTDCompressionLevel: cfg.ZstdCompressionLevel,
+		DetectConflicts:      cfg.DetectConflicts,
+		LoggingLevel:         loggingLevel,
+		NumVersionsToKeep:    cfg.NumVersionsToKeep,
+	}
+	memLimits := ComputeMemoryPreset(cfg.RamLimitMemory, profile)
+	storage, err := open(ctx, opts, memLimits)
+	if err != nil {
+		return nil, fmt.Errorf("open badger in-memory storage: %w", err)
+	}
+
+	storage.TransactionManager = NewTransactionManager(storage, txnManagerOptions)
+	storage.Iterator = NewRawIterator(storage)
+	storage.Locker = NewPkLocker()
+	storage.Encoder = NewEncoderByName(cfg.Encoder)
+
+	return storage, nil
+}
+
+func OpenFSConnection(
+	ctx context.Context,
+	cfg BadgerDBMaster,
+	limit MemoryLimit,
+	txnManagerOptions TxnManagerOptions,
+	loggingLevel LogLevel,
+) (BadgerStorageEngine, error) {
+	opt := Options{
+		Dir:                  cfg.Dir,
+		ValueDir:             cfg.ValueDir,
+		InMemory:             cfg.InMemory,
+		ReadOnly:             cfg.ReadOnly,
+		WithMetrics:          cfg.WithMetrics,
+		GCInterval:           cfg.GCInterval,
+		NumGoroutines:        cfg.NumGoroutines,
+		ValueThreshold:       cfg.ValueThreshold,
+		ValueLogFileSize:     cfg.ValueLogFileSize,
+		BaseTableSize:        cfg.BaseTableSize,
+		NumCompactors:        cfg.NumCompactors,
+		ZSTDCompressionLevel: cfg.ZstdCompressionLevel,
+		DetectConflicts:      cfg.DetectConflicts,
+		LoggingLevel:         loggingLevel,
+		NumVersionsToKeep:    cfg.NumVersionsToKeep,
+		SyncWrites:           cfg.SyncWrites,
+		Compression:          cfg.Compression,
+	}
+
+	if !opt.InMemory && !opt.ReadOnly {
+		if opt.Dir == "" {
+			return nil, fmt.Errorf("empty Dir is unsafe")
+		}
+		// Безопасно создадим каталоги
+		if err := os.MkdirAll(opt.Dir, 0o700); err != nil {
+			return nil, fmt.Errorf("mkdir dir %s: %w", opt.Dir, err)
+		}
+		if opt.ValueDir != "" && opt.ValueDir != opt.Dir {
+			if err := os.MkdirAll(opt.ValueDir, 0o700); err != nil {
+				return nil, fmt.Errorf("mkdir value dir %s: %w", opt.ValueDir, err)
+			}
+		}
+	}
+
+	storage, err := open(ctx, opt, &limit)
+	if err != nil {
+		return nil, fmt.Errorf("open badger temp fs storage: %w", err)
+	}
+
+	storage.TransactionManager = NewTransactionManager(storage, txnManagerOptions)
+	storage.Iterator = NewRawIterator(storage)
+	storage.Locker = NewPkLocker()
+	storage.Encoder = NewEncoderByName(cfg.Encoder)
+
+	return storage, nil
 }
 
 func OpenTempFSConnection(
@@ -96,7 +185,7 @@ func OpenTempFSConnection(
 	limit MemoryLimit,
 	txnManagerOptions TxnManagerOptions,
 	loggingLevel LogLevel,
-) (BadgerStorageEngine, func(), error) {
+) (BadgerStorageEngine, func() error, error) {
 	opt := Options{
 		Dir:                  cfg.Dir,
 		ValueDir:             cfg.ValueDir,
@@ -132,6 +221,19 @@ func OpenTempFSConnection(
 		}
 	}
 
+	cleanup := func() error {
+		if err := removeTempFSArtefacts(opt.Dir, opt.ValueDir); err != nil {
+			log.Printf("remove temp fs artefacts: %v", err)
+			return err
+		}
+		return nil
+	}
+
+	err := cleanup()
+	if err != nil {
+		return nil, nil, err
+	}
+
 	storage, err := open(ctx, opt, &limit)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open badger temp fs storage: %w", err)
@@ -142,77 +244,25 @@ func OpenTempFSConnection(
 	storage.Locker = NewPkLocker()
 	storage.Encoder = NewEncoderByName(cfg.Encoder)
 
-	token := uuid.NewString()
-	storage.cleanupToken = token
-
-	cleanup := func() {
-		if storage.cleanupToken != token {
-			return
-		}
-		if err := removeTempFSArtefacts(storage); err != nil {
-			log.Printf("remove temp fs artefacts: %v", err)
-		}
-	}
-
 	return storage, cleanup, nil
 }
 
-func removeTempFSArtefacts(engine *Engine) error {
-	dir := engine.db.Opts().Dir
-	vdir := engine.db.Opts().ValueDir
-
+func removeTempFSArtefacts(dir, valDir string) error {
 	if dir == "" || dir == "/" {
 		return fmt.Errorf("refuse to remove unsafe path: %q", dir)
 	}
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("remove badger dir %s: %w", dir, err)
 	}
-	if vdir != "" && vdir != dir {
-		if vdir == "/" {
-			return fmt.Errorf("refuse to remove unsafe value dir: %q", vdir)
+	if valDir != "" && valDir != dir {
+		if valDir == "/" {
+			return fmt.Errorf("refuse to remove unsafe value dir: %q", valDir)
 		}
-		if err := os.RemoveAll(vdir); err != nil {
-			return fmt.Errorf("remove badger value dir %s: %w", vdir, err)
+		if err := os.RemoveAll(valDir); err != nil {
+			return fmt.Errorf("remove badger value dir %s: %w", valDir, err)
 		}
 	}
 	return nil
-}
-
-func OpenOnlyInMemoryConnection(
-	ctx context.Context,
-	cfg BadgerDBMaster,
-	txnManagerOptions TxnManagerOptions,
-	loggingLevel LogLevel,
-	profile string,
-) (BadgerStorageEngine, error) {
-	opt := Options{
-		InMemory:             cfg.InMemory,
-		ReadOnly:             cfg.ReadOnly,
-		WithMetrics:          cfg.WithMetrics,
-		GCInterval:           cfg.GCInterval,
-		NumGoroutines:        cfg.NumGoroutines,
-		ValueThreshold:       cfg.ValueThreshold,
-		ValueLogFileSize:     cfg.ValueLogFileSize,
-		BaseTableSize:        cfg.BaseTableSize,
-		NumCompactors:        cfg.NumCompactors,
-		ZSTDCompressionLevel: cfg.ZstdCompressionLevel,
-		DetectConflicts:      cfg.DetectConflicts,
-		LoggingLevel:         loggingLevel,
-		NumVersionsToKeep:    cfg.NumVersionsToKeep,
-	}
-	memLimits := ComputeMemoryPreset(cfg.RamLimitMemory, profile)
-	storage, err := open(ctx, opt, memLimits)
-	if err != nil {
-		return nil, fmt.Errorf("open badger in-memory storage: %w", err)
-	}
-
-	storage.TransactionManager = NewTransactionManager(storage, txnManagerOptions)
-	storage.Iterator = NewRawIterator(storage)
-	storage.Locker = NewPkLocker()
-	storage.Encoder = NewEncoderByName(cfg.Encoder)
-	//storage.temp = false
-
-	return storage, nil
 }
 
 func open(ctx context.Context, opts Options, limit *MemoryLimit) (*Engine, error) {
@@ -247,9 +297,7 @@ func open(ctx context.Context, opts Options, limit *MemoryLimit) (*Engine, error
 	if opts.ValueDir != "" {
 		bo = bo.WithValueDir(opts.ValueDir)
 	}
-
 	bo = bo.WithSyncWrites(opts.SyncWrites)
-
 	if opts.NumGoroutines > 0 {
 		bo = bo.WithNumGoroutines(opts.NumGoroutines)
 	}
